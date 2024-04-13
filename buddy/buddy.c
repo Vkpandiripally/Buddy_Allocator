@@ -35,6 +35,9 @@
 #define BUDDY_ADDR(addr, o) (void *)((((unsigned long)addr - (unsigned long)g_memory) ^ (1<<o)) \
 									 + (unsigned long)g_memory)
 
+#define list_first_entry(ptr, type, member) \
+    list_entry((ptr)->next, type, member)
+
 #if USE_DEBUG == 1
 #  define PDEBUG(fmt, ...) \
 	fprintf(stderr, "%s(), %s:%d: " fmt,			\
@@ -114,6 +117,35 @@ void buddy_init()
 void *buddy_alloc(int size)
 {
 	/* TODO: IMPLEMENT THIS FUNCTION */
+	for(int order = MIN_ORDER; order <= MAX_ORDER; order++){
+		// if free list block size empty, then choose larger block
+		if (!list_empt(&free_area[order])){
+			page_t *page = list_first_entry(&free_area[order], page_t, list);
+			list_del(&page->list); 
+		
+
+			//allocate blocks 
+			if ((1 << order) >= size){
+				while (order > MIN_ORDER && (1 << order) / 2 >= size){
+					page_t *buddy = (page_t *)((char *)page + (sizeof(page_t)) + (1 << (order - 1)));
+
+					INIT_LIST_HEAD(&buddy->list);
+					buddy->size = 1 << (order - 1);
+
+					// add buddy block to appropriate list
+					list_add(&buddy->list, &free_area[order -1]);
+
+					// decrease from original block
+					order--;
+				}
+				return(void *)page; 
+			} else {
+				return(void *)page;
+			}
+		}
+		
+	}
+			
 	return NULL;
 }
 
