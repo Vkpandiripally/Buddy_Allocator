@@ -54,8 +54,8 @@
 typedef struct {
 	struct list_head list;
 	/* TODO: DECLARE NECESSARY MEMBER VARIABLES */
-	size_t size;
-	void* memory; 
+	int index;
+	char* address; 
 	int flag;
 } page_t;
 
@@ -89,6 +89,9 @@ void buddy_init()
 	for (i = 0; i < n_pages; i++) {
 		/* TODO: INITIALIZE PAGE STRUCTURES */
 		INIT_LIST_HEAD(&g_pages[i].list);
+		g_pages[i].index = i;
+		g_pages[i].address = PAGE_TO_ADDR(i);
+		CLEAR(g_pages[i].order);
 	}
 
 	/* initialize freelist */
@@ -116,36 +119,26 @@ void buddy_init()
  */
 void *buddy_alloc(int size)
 {
-	/* TODO: IMPLEMENT THIS FUNCTION */
-	for(int order = MIN_ORDER; order <= MAX_ORDER; order++){
-		// if free list block size empty, then choose larger block
-		if (!list_empt(&free_area[order])){
-			page_t *page = list_first_entry(&free_area[order], page_t, list);
-			list_del(&page->list); 
-		
-
-			//allocate blocks 
-			if ((1 << order) >= size){
-				while (order > MIN_ORDER && (1 << order) / 2 >= size){
-					page_t *buddy = (page_t *)((char *)page + (sizeof(page_t)) + (1 << (order - 1)));
-
-					INIT_LIST_HEAD(&buddy->list);
-					buddy->size = 1 << (order - 1);
-
-					// add buddy block to appropriate list
-					list_add(&buddy->list, &free_area[order -1]);
-
-					// decrease from original block
-					order--;
-				}
-				return(void *)page; 
-			} else {
-				return(void *)page;
-			}
-		}
-		
+	#if USE_DEBUG == 1
+			PDEBUG("Split size %dK on order %d\n", order, (int)pow(2,order)/1024);
+	#endif
+	page_t *left_temp_ptr;
+	if(order == i){
+		left_temp_ptr = list_entry(free_area[i].next, page_t, list);
+		list_del(&left_temp_ptr->list);
 	}
-			
+	/* TODO: IMPLEMENT THIS FUNCTION */
+	else {
+		#if USE_DEG == 1
+			PDEBUG("Recursing.\n");
+		#endif
+		void *block_address = buddy_alloc(1 << (order + 1));
+		left_temp_ptr = &g_pages[ADDR_TO_PAGE(block_address)];
+
+		list_add(&g_pages[left_temp_ptr->index + (1 << order) / PAGE_SIZE].list, &free_area[order]);
+	}
+
+	left_temp_ptr->order = order;	
 	return NULL;
 }
 
@@ -161,6 +154,30 @@ void *buddy_alloc(int size)
 void buddy_free(void *addr)
 {
 	/* TODO: IMPLEMENT THIS FUNCTION */
+	char* address = (char*)addr;
+
+	int index = ADDR_TO_PAGE (address);
+	int order = g_pages[index].order;
+
+	do
+	{
+		page_t *const current_page = find_buddy(address, order);
+
+		if( NULL == current_page || BUDDY_ADDR(address, order) != current_page->address)
+		{
+			CLEAR(g_pages[index].order);
+			list_add(&g_pages[index].list, &free_area[order]);
+			return;
+		}
+
+		if(address > current_page->address)
+		{
+			address = current_page->address;
+			index = ADDR_TO_PAGE(address);
+		}
+
+		list_del(&current_page->list);
+	} while (order++ < MAX_ORDER);
 }
 
 /**
