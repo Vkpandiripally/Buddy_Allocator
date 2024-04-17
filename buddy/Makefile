@@ -42,7 +42,7 @@ all: doc $(PROGNAME)
 
 # Build and run the program
 test: $(PROGNAME)
-	./run_tests.bash -d
+	    ./run_tests.bash -d
 
 # Build the documentation for the project
 doc: $(CFILES) $(HFILES) $(DOXYGENCONF) README.md

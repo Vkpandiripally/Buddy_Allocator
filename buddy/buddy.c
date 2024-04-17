@@ -23,6 +23,7 @@
  **************************************************************************/
 #define MIN_ORDER 12
 #define MAX_ORDER 20
+#define INIT_ORDER -1
 
 #define PAGE_SIZE (1<<MIN_ORDER)
 /* page index to address */
@@ -34,9 +35,6 @@
 /* find buddy address */
 #define BUDDY_ADDR(addr, o) (void *)((((unsigned long)addr - (unsigned long)g_memory) ^ (1<<o)) \
 									 + (unsigned long)g_memory)
-
-#define list_first_entry(ptr, type, member) \
-    list_entry((ptr)->next, type, member)
 
 #if USE_DEBUG == 1
 #  define PDEBUG(fmt, ...) \
@@ -53,10 +51,11 @@
  **************************************************************************/
 typedef struct {
 	struct list_head list;
-	/* TODO: DECLARE NECESSARY MEMBER VARIABLES */
+	int isUsed;
+	int order;
 	int index;
-	char* address; 
-	int flag;
+	char *memAdr;
+	/* TODO: DECLARE NECESSARY MEMBER VARIABLES */
 } page_t;
 
 /**************************************************************************
@@ -76,6 +75,40 @@ page_t g_pages[(1<<MAX_ORDER)/PAGE_SIZE];
  **************************************************************************/
 
 /**************************************************************************
+* Get Proper Level for a Memory Request
+**************************************************************************/
+ int getProperLevel(int req)
+ {
+	 int i;
+	 for(i=MIN_ORDER; i<MAX_ORDER; i++){
+		 if(1<<i >= req){
+			 return i;
+		 }
+	 }
+	 printf("ERR: MEMREQ IS TOO BIG.\n");
+	 return -1;
+ }
+
+//find the correct index of the free block after a split.
+int find_index(int order){
+	int index = 256/(MAX_ORDER - (order + 1));
+	return index;
+}
+
+//Pass it the order we're at and the order we need
+ void split(int currentOrder, int desiredOrder, int index){
+	 printf("splitting on order: %d for index %d\n", currentOrder, index);
+	 if(currentOrder == desiredOrder) {
+		 return;
+	 }
+	 int order = currentOrder-1;
+	 page_t* right_side = &g_pages[ADDR_TO_PAGE(BUDDY_ADDR(PAGE_TO_ADDR(index), order))];
+		 //int ind = find_index(order);
+	 list_add(&(right_side->list), &free_area[order]);
+	 split(order, desiredOrder, index);
+ }
+
+/**************************************************************************
  * Local Functions
  **************************************************************************/
 
@@ -87,11 +120,15 @@ void buddy_init()
 	int i;
 	int n_pages = (1<<MAX_ORDER) / PAGE_SIZE;
 	for (i = 0; i < n_pages; i++) {
+
+		//Add to the g_pages array given the index i
+		page_t new;
+		new.isUsed = 0;
+		new.index = i;
+		new.order = INIT_ORDER;
+		g_pages[i] = new;
+
 		/* TODO: INITIALIZE PAGE STRUCTURES */
-		INIT_LIST_HEAD(&g_pages[i].list);
-		g_pages[i].index = i;
-		g_pages[i].address = PAGE_TO_ADDR(i);
-		CLEAR(g_pages[i].order);
 	}
 
 	/* initialize freelist */
@@ -101,6 +138,9 @@ void buddy_init()
 
 	/* add the entire memory as a freeblock */
 	list_add(&g_pages[0].list, &free_area[MAX_ORDER]);
+
+	/* set the 1024 chunk to highest order */
+	g_pages[0].order = MAX_ORDER;
 }
 
 /**
@@ -119,27 +159,37 @@ void buddy_init()
  */
 void *buddy_alloc(int size)
 {
-	#if USE_DEBUG == 1
-			PDEBUG("Split size %dK on order %d\n", order, (int)pow(2,order)/1024);
-	#endif
-	page_t *left_temp_ptr;
-	if(order == i){
-		left_temp_ptr = list_entry(free_area[i].next, page_t, list);
-		list_del(&left_temp_ptr->list);
-	}
-	/* TODO: IMPLEMENT THIS FUNCTION */
-	else {
-		#if USE_DEG == 1
-			PDEBUG("Recursing.\n");
-		#endif
-		void *block_address = buddy_alloc(1 << (order + 1));
-		left_temp_ptr = &g_pages[ADDR_TO_PAGE(block_address)];
+	/*
+	* Round size up to nearest power of 2 to find the first
+	* level to check
+	* Go to level n, check and see if free list has items in it,
+	* if so, alloc memory block and return the address (index of g_page)
+	*
+	* If NOT, go to level n-1, go to free list, get a block, split it,
+	* add the right block to the free list of level n and alloc the left block to
+	* the memory request
+	*/
+	int order = getProperLevel(size);
+	int freeOrder = order;
 
-		list_add(&g_pages[left_temp_ptr->index + (1 << order) / PAGE_SIZE].list, &free_area[order]);
+	while(list_empty(&free_area[freeOrder]) && (freeOrder < 21)){
+		printf("Level %d has no free blocks, checking next level\n",freeOrder);
+		freeOrder++;
+		if(freeOrder==21){
+			return NULL;
+		}
 	}
+	printf("First free order is: %d\n",freeOrder);
+	page_t* free_page = list_entry(free_area[freeOrder].next, page_t, list);
+	int index = free_page->index;
+	list_del_init(&(free_page->list));
 
-	left_temp_ptr->order = order;	
-	return NULL;
+	//split block at level n, remove from the free list
+	free_page->isUsed = 1;
+	free_page->order = order;
+	split(freeOrder, order, index);
+
+	return ((void*)PAGE_TO_ADDR(index));
 }
 
 /**
@@ -153,31 +203,38 @@ void *buddy_alloc(int size)
  */
 void buddy_free(void *addr)
 {
-	/* TODO: IMPLEMENT THIS FUNCTION */
-	char* address = (char*)addr;
-
-	int index = ADDR_TO_PAGE (address);
-	int order = g_pages[index].order;
-
-	do
-	{
-		page_t *const current_page = find_buddy(address, order);
-
-		if( NULL == current_page || BUDDY_ADDR(address, order) != current_page->address)
-		{
-			CLEAR(g_pages[index].order);
-			list_add(&g_pages[index].list, &free_area[order]);
-			return;
+	/*
+	* get the page_t struct of the page to free
+	* based on the addr passed in
+	*/
+	page_t* page_to_free = &g_pages[ADDR_TO_PAGE(addr)];
+	int currentOrder = page_to_free->order;
+	char found = 0;
+	while((currentOrder <= MAX_ORDER) && (found == 0)) {
+		if(currentOrder == MAX_ORDER) {
+			printf("order is maxed out.");
+			page_to_free->order = currentOrder;
+			list_add(&page_to_free->list, &free_area[currentOrder]);
 		}
-
-		if(address > current_page->address)
-		{
-			address = current_page->address;
-			index = ADDR_TO_PAGE(address);
+		page_t *buddy = &g_pages[ADDR_TO_PAGE(BUDDY_ADDR(PAGE_TO_ADDR(page_to_free->index), currentOrder))];
+		struct list_head *tracker;
+		list_for_each(tracker, &free_area[currentOrder]){
+			if(buddy==list_entry(tracker,page_t,list)){
+				found = 1;
+			}
 		}
-
-		list_del(&current_page->list);
-	} while (order++ < MAX_ORDER);
+		if(!found){
+				break;
+		} else {
+			list_del_init(&buddy->list);
+			if(buddy->index<page_to_free->index){
+				page_to_free = buddy;
+			}
+			currentOrder++;
+		}
+	}
+	page_to_free->order = currentOrder;
+	list_add(&page_to_free->list, &free_area[currentOrder]);
 }
 
 /**
